@@ -225,16 +225,33 @@ with tab_over:
             ca = ad[(ad.date >= start) & (ad.date <= end)]
             pa = ad[(ad.date >= prev_start) & (ad.date < start)]
             items = []
-            for plat, g in ca.groupby("platform"):
+            # every known platform stays on the row: a paused one shows when it last spent
+            for plat in [p for p in PLATFORM_ICON if p in set(ad.platform)] + \
+                        [p for p in sorted(set(ad.platform)) if p not in PLATFORM_ICON]:
+                g, pg = ca[ca.platform == plat], pa[pa.platform == plat]
                 s_, v_ = g.spend_sar.sum(), g.conv_value_sar.sum()
+                ic, bg, fg = PLATFORM_ICON.get(plat, (plat[:1], "#333", "#fff"))
                 if not s_:
+                    spent = table("ad_spend_daily", [("brand", f"eq.{brand}"), ("platform", f"eq.{plat}"),
+                                                     ("spend_sar", "gt.0"), ("order", "date.desc"), ("limit", "1")])
+                    since = (f"since {pd.to_datetime(spent.date.iloc[0]):%b %d}" if not spent.empty
+                             else "no spend")
+                    items.append(ui.watch_item(ic, bg, fg, f"{plat} · {since}", "Paused"))
                     continue
-                pg = pa[pa.platform == plat]
+                d_ = g.groupby("date")[["spend_sar", "conv_value_sar", "conversions"]].sum()
+                if not v_:
+                    # no purchase value reported (TikTok today): ROAS can't be computed, show CPA instead
+                    cpa = s_ / g.conversions.sum() if g.conversions.sum() else None
+                    pcpa = pg.spend_sar.sum() / pg.conversions.sum() if pg.conversions.sum() else None
+                    series = d_.spend_sar.rolling(3, min_periods=1).mean()
+                    items.append(ui.watch_item(ic, bg, fg, f"{plat} · CPA (no value tracked)",
+                                               f"{cpa:,.0f} SAR" if cpa else money(s_),
+                                               ch(cpa, pcpa) if cpa and pcpa else None, list(series.tail(21)),
+                                               inverse=True))
+                    continue
                 roas = v_ / s_
                 proas = pg.conv_value_sar.sum() / pg.spend_sar.sum() if pg.spend_sar.sum() else None
-                d_ = g.groupby("date")[["spend_sar", "conv_value_sar"]].sum()
                 series = (d_.conv_value_sar / d_.spend_sar.where(d_.spend_sar > 0)).rolling(3, min_periods=1).mean()
-                ic, bg, fg = PLATFORM_ICON.get(plat, (plat[:1], "#333", "#fff"))
                 items.append(ui.watch_item(ic, bg, fg, f"{plat} · ROAS", f"{roas:.2f}",
                                            ch(roas, proas) if proas else None, list(series.tail(21))))
             ui.html(ui.watchlist("Ad platforms", items))
@@ -312,6 +329,11 @@ with tab_ads:
         prev_ad = ad[(ad.date >= prev_start) & (ad.date < start)]
         st.caption("ROAS = قيمة التحويلات اللي المنصة نفسها بتقولها ÷ الصرف (بيتعد مرتين بين المنصات). "
                    "MER = إيراد المتجر الفعلي ÷ كل الصرف — ده الرقم الحقيقي.")
+        no_value = [p_ for p_, g_ in cur_ad.groupby("platform")
+                    if g_.spend_sar.sum() > 0 and not g_.conv_value_sar.sum()]
+        if no_value:
+            st.warning(f"{'، '.join(no_value)}: فيه صرف بس مفيش قيمة مشتريات راجعة من المنصة — الـ ROAS مش محسوب. "
+                       "اتأكد إن الـ pixel/Events API بيبعت value + currency مع الـ Purchase.")
         p = cur_ad.groupby("platform")[["spend_sar", "conv_value_sar", "conversions", "clicks", "impressions"]].sum()
         pp = prev_ad.groupby("platform")[["spend_sar", "conv_value_sar"]].sum()
         p["roas"] = p.conv_value_sar / p.spend_sar.where(p.spend_sar > 0)
