@@ -17,11 +17,13 @@ import plotly.express as px
 import requests
 import streamlit as st
 
+import ui
+
 CREDS = Path.home() / ".config" / "ops-dashboard" / "supabase.json"
 BRANDS = {"natcho": "Natcho", "carina": "Carina", "genz": "GenZ"}
 SEV_ICON = {"critical": "🔴", "warning": "🟠", "watch": "🟡", "win": "🟢"}
 
-st.set_page_config(page_title="Ops Dashboard", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Konoz Ops", page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 
 
 def creds():
@@ -119,12 +121,19 @@ def nums(df, cols):
 
 
 RESTOCK_ICON = {"critical": "🔴 critical", "warning": "🟠 warning", "watch": "🟡 watch"}
+SEV_ORDER = ["critical", "warning", "watch", "win"]
+SEV_COLOR = {"critical": ui.RED, "warning": "#FF9F43", "watch": ui.YELLOW, "win": ui.GREEN}
+PLATFORM_ICON = {"Google Ads": ("G", "#FFFFFF", "#4285F4"), "Meta": ("∞", "#0866FF", "#FFFFFF"),
+                 "Snapchat": ("S", "#FFFC00", "#111111"), "TikTok": ("♪", "#000000", "#FFFFFF")}
+PERIODS = {7: "7D", 14: "14D", 30: "1M", 90: "3M", 180: "6M", 365: "1Y"}
 
 gate()
-st.title("📊 Ops Dashboard")
+ui.inject()
 
-c1, c2 = st.columns([1, 3])
-days = c1.selectbox("Period", [7, 14, 30, 90, 180, 365], index=2, format_func=lambda d: f"Last {d} days")
+h_logo, h_health, h_brand, h_period = st.columns([2.2, 3, 2.2, 3.4], vertical_alignment="center")
+h_logo.markdown('<div class="k-logo"><i></i>Konoz Ops</div>', unsafe_allow_html=True)
+days = h_period.segmented_control("Period", list(PERIODS), format_func=PERIODS.get, default=30,
+                                  label_visibility="collapsed", key="period") or 30
 end = date.today() - timedelta(days=1)
 start = end - timedelta(days=days - 1)
 prev_start = start - timedelta(days=days)
@@ -143,84 +152,164 @@ for col in num:
         kpi[col] = pd.to_numeric(kpi[col], errors="coerce")
 cur = kpi[(kpi.date >= start) & (kpi.date <= end)]
 prev = kpi[(kpi.date >= prev_start) & (kpi.date < start)]
-c2.caption(f"{start} → {end} · compared with {prev_start} → {start - timedelta(days=1)}")
 
+brands_here = [b for b in BRANDS if b in set(kpi.brand)]
+brand = h_brand.segmented_control("Brand", brands_here, format_func=BRANDS.get, default=brands_here[0],
+                                  label_visibility="collapsed", key="brand") or brands_here[0]
+
+if not ad.empty:
+    ad["date"] = pd.to_datetime(ad["date"]).dt.date
+    for col in ["spend_sar", "conv_value_sar", "conversions", "clicks", "impressions"]:
+        ad[col] = pd.to_numeric(ad[col], errors="coerce")
+    ad = ad[ad.brand == brand]
+if not alerts.empty:
+    alerts = alerts[alerts.brand == brand]
+
+# health score = 100 minus the weight of the latest run's alerts
+latest_alerts = alerts[alerts.run_date == alerts.run_date.max()] if not alerts.empty else alerts
+health = max(0, 100 - sum({"critical": 15, "warning": 7, "watch": 3}.get(s, 0) for s in latest_alerts.get("severity", [])))
+h_health.markdown(f'<div class="k-pill">{ui.ticks(health)}<b style="color:#fff">{health}</b>'
+                  f'<span style="color:#aaa">Health Score</span></div>', unsafe_allow_html=True)
+
+seo_all = nums(table("seo_daily", [("brand", f"eq.{brand}"), ("order", "date")]),
+               ["published", "avg_score", "low_score", "missing_title", "missing_description", "missing_keywords",
+                "no_images", "single_image", "duplicate_titles", "url_errors", "slow_pages", "merchant_disapproved"])
+ps_all = nums(table("product_status", [("brand", f"eq.{brand}")]),
+              ["stock", "units_7d", "units_30d", "revenue_30d", "velocity_day", "days_cover", "reorder_qty",
+               "seo_score", "price_sar", "gsc_impressions", "gsc_clicks", "gsc_position"])
+
+st.write("")
 tab_over, tab_ads, tab_prod, tab_seo, tab_gsc = st.tabs(
-    ["📊 Overview", "💸 Ads & ROAS", "📦 Products & Restock", "🩺 SEO health", "🔎 Search Console"])
+    ["Overview", "Ads & ROAS", "Products & Restock", "SEO health", "Search Console"])
 
+# ---- overview ------------------------------------------------------------------
 with tab_over:
-    # ---- brand cards -------------------------------------------------------------
-    for brand in [b for b in BRANDS if b in set(kpi.brand)]:
-        cb, pb = cur[cur.brand == brand], prev[prev.brand == brand]
-        st.subheader(BRANDS[brand])
-        cols = st.columns(5)
-        rev, prev_rev = cb.revenue_sar.sum(), pb.revenue_sar.sum()
-        cols[0].metric("Revenue", money(rev), delta(rev, prev_rev))
-        cols[1].metric("Orders", f"{cb.orders.sum():,.0f}", delta(cb.orders.sum(), pb.orders.sum()))
-        aov = rev / cb.orders.sum() if cb.orders.sum() else 0
-        prev_aov = prev_rev / pb.orders.sum() if pb.orders.sum() else 0
-        cols[2].metric("AOV", f"{aov:,.0f} SAR", delta(aov, prev_aov))
-        spend = cb.ad_spend_sar.sum() if "ad_spend_sar" in cb else 0
+    cb, pb = cur[cur.brand == brand], prev[prev.brand == brand]
+    rev, prev_rev = cb.revenue_sar.sum(), pb.revenue_sar.sum()
+    orders, prev_orders = cb.orders.sum(), pb.orders.sum()
+    aov = rev / orders if orders else 0
+    prev_aov = prev_rev / prev_orders if prev_orders else 0
+    spend, prev_spend = cb.ad_spend_sar.sum(), pb.ad_spend_sar.sum()
+    mer = rev / spend if spend else None
+    prev_mer = prev_rev / prev_spend if prev_spend else None
+    ch = lambda c, p: (c - p) / p if p else None
+
+    left, right = st.columns([5, 7.4], gap="medium")
+    with left.container(key="card_total", height=470, border=False):
+        tiles = [ui.mini("Orders", f"{orders:,.0f}", ui.GREEN, ch(orders, prev_orders)),
+                 ui.mini("AOV", f"{aov:,.0f} SAR", ui.ORANGE, ch(aov, prev_aov))]
         if spend:
-            mer, prev_mer = rev / spend, (prev_rev / pb.ad_spend_sar.sum() if pb.ad_spend_sar.sum() else None)
-            cols[3].metric("Ad spend", money(spend), delta(spend, pb.ad_spend_sar.sum()), delta_color="inverse")
-            cols[4].metric("MER", f"{mer:.2f}", delta(mer, prev_mer))
+            tiles += [ui.mini("Ad spend", money(spend), ui.YELLOW, ch(spend, prev_spend), inverse=True),
+                      ui.mini("MER", f"{mer:.2f}", ui.WHITE, ch(mer, prev_mer) if prev_mer else None)]
         else:
-            cols[3].metric("Ad spend", "—")
-            cols[4].metric("MER", "—")
+            oos = int(((ps_all.stock <= 0) & (ps_all.infinite != True)).sum()) if not ps_all.empty else 0
+            tiles += [ui.mini("Published", f"{len(ps_all):,}", ui.YELLOW),
+                      ui.mini("Out of stock", f"{oos:,}", ui.WHITE)]
+        ui.html(f'<div class="k-label">Total revenue · {BRANDS[brand]}</div>'
+                f'<div class="k-big">{rev:,.0f} <span style="font-size:1.2rem;color:#aaa">SAR</span>'
+                f'{ui.badge(ch(rev, prev_rev))}</div>'
+                f'<div class="k-sub" style="margin-top:6px">{start:%b %d} → {end:%b %d} · vs previous {days} days</div>'
+                f'<div class="k-grid">{"".join(tiles)}</div>')
 
-    # ---- trends ------------------------------------------------------------------
-    st.divider()
-    t1, t2 = st.columns(2)
-    daily = cur.groupby(["date", "brand"], as_index=False).revenue_sar.sum()
-    daily["brand"] = daily.brand.map(BRANDS)
-    t1.plotly_chart(px.line(daily, x="date", y="revenue_sar", color="brand", title="Revenue per day (SAR)",
-                            labels={"revenue_sar": "SAR", "date": ""}), width="stretch")
-    m = cur[cur.ad_spend_sar.fillna(0) > 0].assign(mer=lambda d: d.revenue_sar / d.ad_spend_sar)
-    m["brand"] = m.brand.map(BRANDS)
-    t2.plotly_chart(px.line(m, x="date", y="mer", color="brand", title="MER per day (revenue ÷ ad spend)",
-                            labels={"mer": "MER", "date": ""}), width="stretch")
+    with right.container(key="hero", height=470, border=False):
+        daily = cb.groupby("date", as_index=False).revenue_sar.sum()
+        per_day = rev / days
+        ui.html(f'<div class="k-hero-t">Revenue per day</div>'
+                f'<div class="k-hero-v">{per_day:,.0f} SAR{ui.badge(ch(rev, prev_rev))}</div>')
+        st.plotly_chart(ui.hero_chart(pd.to_datetime(daily.date), daily.revenue_sar), width="stretch",
+                        config={"displayModeBar": False}, key="hero_chart")
 
-    if not ad.empty:
-        ad["date"] = pd.to_datetime(ad["date"]).dt.date
-        ad["spend_sar"] = pd.to_numeric(ad["spend_sar"], errors="coerce")
-        a = ad[(ad.date >= start) & (ad.date <= end)].groupby(["date", "platform"], as_index=False).spend_sar.sum()
-        st.plotly_chart(px.bar(a, x="date", y="spend_sar", color="platform", title="Ad spend by platform (SAR)",
-                               labels={"spend_sar": "SAR", "date": ""}), width="stretch")
+    # watchlist row
+    with st.container(key="card_watch", border=False):
+        if not ad.empty and ad.spend_sar.sum() > 0:
+            ca = ad[(ad.date >= start) & (ad.date <= end)]
+            pa = ad[(ad.date >= prev_start) & (ad.date < start)]
+            items = []
+            for plat, g in ca.groupby("platform"):
+                s_, v_ = g.spend_sar.sum(), g.conv_value_sar.sum()
+                if not s_:
+                    continue
+                pg = pa[pa.platform == plat]
+                roas = v_ / s_
+                proas = pg.conv_value_sar.sum() / pg.spend_sar.sum() if pg.spend_sar.sum() else None
+                d_ = g.groupby("date")[["spend_sar", "conv_value_sar"]].sum()
+                series = (d_.conv_value_sar / d_.spend_sar.where(d_.spend_sar > 0)).rolling(3, min_periods=1).mean()
+                ic, bg, fg = PLATFORM_ICON.get(plat, (plat[:1], "#333", "#fff"))
+                items.append(ui.watch_item(ic, bg, fg, f"{plat} · ROAS", f"{roas:.2f}",
+                                           ch(roas, proas) if proas else None, list(series.tail(21))))
+            ui.html(ui.watchlist("Ad platforms", items))
+        else:
+            seo_last = seo_all.iloc[-1] if not seo_all.empty else None
+            od = cb.groupby("date").orders.sum()
+            items = [ui.watch_item("◎", "#fff", "#111", "Orders / day", f"{orders / days:.1f}",
+                                   ch(orders, prev_orders), list(od.tail(21))),
+                     ui.watch_item("▣", ui.YELLOW, "#111", "Published", f"{len(ps_all):,}")]
+            if seo_last is not None:
+                items += [ui.watch_item("✦", ui.GREEN, "#111", "SEO score", f"{seo_last.avg_score:.0f}/100"),
+                          ui.watch_item("≡", ui.ORANGE, "#fff", "Duplicate SEO titles", f"{int(seo_last.duplicate_titles):,}")]
+            ui.html(ui.watchlist("Store", items))
 
-    # ---- catalogue & shipping snapshot -------------------------------------------
-    snap_cols = ["published_products", "zero_sales_products", "out_of_stock_products", "stuck_shipments", "stuck_value_sar"]
-    snap = kpi[kpi[[c for c in snap_cols if c in kpi]].notna().any(axis=1)] if any(c in kpi for c in snap_cols) else pd.DataFrame()
-    if not snap.empty:
-        st.divider()
-        st.subheader("Catalogue & shipping (latest)")
-        latest = snap.sort_values("date").groupby("brand").tail(1)
-        latest = latest.assign(brand=latest.brand.map(BRANDS))[["brand", "date"] + [c for c in snap_cols if c in latest]]
-        st.dataframe(latest, hide_index=True, width="stretch")
+    b1, b2, b3 = st.columns([2.35, 1.6, 1.6], gap="medium")
+    with b1.container(key="card_alloc", height=360, border=False):
+        if not ad.empty and ad.spend_sar.sum() > 0:
+            ca = ad[(ad.date >= start) & (ad.date <= end)].groupby("platform").spend_sar.sum().sort_values(ascending=False)
+            share = ca / ca.sum() if ca.sum() else ca
+            colors = [(ui.ORANGE, "#fff"), (ui.YELLOW, "#111"), (ui.WHITE, "#111"), ("#5A5A5A", "#fff")]
+            ui.html(f'<div class="k-head">Spend allocation<span class="k-sub">{money(ca.sum())}</span></div>'
+                    + ui.bars([(p, f, *colors[i % 4]) for i, (p, f) in enumerate(share.items())]))
+        else:
+            n = len(ps_all) or 1
+            stock_ok = ((ps_all.stock > 0) | (ps_all.infinite == True)).sum() / n if not ps_all.empty else 0
+            seo_ok = (ps_all.seo_score >= 70).sum() / n if not ps_all.empty else 0
+            img_ok = 1 - (seo_all.iloc[-1].single_image / n) if not seo_all.empty else 0
+            uniq = 1 - (seo_all.iloc[-1].duplicate_titles / n) if not seo_all.empty else 0
+            ui.html('<div class="k-head">Catalogue health<span class="k-sub">% of published products</span></div>'
+                    + ui.bars([("In stock", stock_ok, ui.ORANGE, "#fff"), ("SEO ≥ 70", seo_ok, ui.YELLOW, "#111"),
+                               ("2+ images", img_ok, ui.WHITE, "#111"), ("Unique title", uniq, "#5A5A5A", "#fff")]))
 
-    # ---- alerts ------------------------------------------------------------------
-    st.divider()
-    st.subheader("Alerts")
-    if alerts.empty:
-        st.caption("مفيش تنبيهات محفوظة لسه.")
-    else:
-        sev = st.multiselect("Severity", list(SEV_ICON), default=["critical", "warning"])
-        a = alerts[alerts.severity.isin(sev)].copy()
-        a["severity"] = a.severity.map(lambda s: f"{SEV_ICON[s]} {s}")
-        a["brand"] = a.brand.map(BRANDS)
-        st.dataframe(a[["run_date", "brand", "severity", "message", "action"]], hide_index=True, width="stretch")
+    with b2.container(key="card_gauge", height=360, border=False):
+        if seo_all.empty:
+            ui.html('<div class="k-head">SEO Health</div><div class="k-sub">مفيش داتا SEO لسه.</div>')
+        else:
+            last = seo_all.iloc[-1]
+            note = (f"Score {last.avg_score - seo_all.iloc[-2].avg_score:+.1f} vs last check" if len(seo_all) > 1
+                    else f"{int(last.low_score)} products below 70")
+            ui.html(f'<div class="k-head">SEO Health<span class="k-arrow">↗</span></div>'
+                    f'<div class="k-score">{last.avg_score:.0f} <small>/100</small></div>{ui.gauge(last.avg_score)}'
+                    f'<div class="k-sub" style="text-align:center;margin-top:-8px">{note}</div>')
+
+    with b3.container(key="cardlight_insight", height=360, border=False):
+        if latest_alerts.empty:
+            text = "مفيش تنبيهات في آخر تشغيل للـ Morning Ops."
+        else:
+            top = latest_alerts.assign(o=latest_alerts.severity.map(SEV_ORDER.index)).sort_values("o").iloc[0]
+            act = top.action if isinstance(top.action, str) else ""
+            text = f'<div dir="auto"><b>{top.message}</b><br>{act}</div>'
+        counts = latest_alerts.severity.value_counts() if not latest_alerts.empty else pd.Series(dtype=int)
+        chips = "".join(f'<div class="k-chip" style="background:{SEV_COLOR[s]}" title="{s}">{int(counts.get(s, 0))}</div>'
+                        for s in SEV_ORDER)
+        ui.html(f'<div class="k-head">✦ Today\'s insight<span class="k-arrow">↗</span></div>'
+                f'<div class="k-insight">{text}</div><div class="k-chips">{chips}</div>')
+
+    st.write("")
+    with st.container(key="card_alerts", border=False):
+        ui.html('<div class="k-head" style="margin-bottom:10px">Alerts</div>')
+        if alerts.empty:
+            st.caption("مفيش تنبيهات محفوظة لسه.")
+        else:
+            sev = st.multiselect("Severity", SEV_ORDER, default=["critical", "warning"], label_visibility="collapsed")
+            a = alerts[alerts.severity.isin(sev)].copy()
+            a["severity"] = a.severity.map(lambda s: f"{SEV_ICON[s]} {s}")
+            st.dataframe(a[["run_date", "severity", "message", "action"]], hide_index=True, width="stretch")
 
 
 # ---- ads & ROAS --------------------------------------------------------------
 with tab_ads:
-    if ad.empty:
-        st.caption("مفيش داتا إعلانات.")
+    if ad.empty or not ad.spend_sar.sum():
+        st.caption(f"مفيش داتا إعلانات لـ {BRANDS[brand]}.")
     else:
-        for col in ["conv_value_sar", "conversions", "clicks", "impressions"]:
-            ad[col] = pd.to_numeric(ad[col], errors="coerce")
         cur_ad = ad[(ad.date >= start) & (ad.date <= end)]
         prev_ad = ad[(ad.date >= prev_start) & (ad.date < start)]
-        rev_by_brand = cur.groupby("brand").revenue_sar.sum()
         st.caption("ROAS = قيمة التحويلات اللي المنصة نفسها بتقولها ÷ الصرف (بيتعد مرتين بين المنصات). "
                    "MER = إيراد المتجر الفعلي ÷ كل الصرف — ده الرقم الحقيقي.")
         p = cur_ad.groupby("platform")[["spend_sar", "conv_value_sar", "conversions", "clicks", "impressions"]].sum()
@@ -231,13 +320,12 @@ with tab_ads:
         p["cpc_sar"] = p.spend_sar / p.clicks.where(p.clicks > 0)
         p["share_of_spend"] = p.spend_sar / p.spend_sar.sum()
         total_spend = p.spend_sar.sum()
+        brand_rev = cur[cur.brand == brand].revenue_sar.sum()
         k = st.columns(4)
         k[0].metric("Total spend", money(total_spend), delta(total_spend, pp.spend_sar.sum()), delta_color="inverse")
         k[1].metric("Platform ROAS (all)", f"{p.conv_value_sar.sum() / total_spend:.2f}" if total_spend else "—")
-        nat_rev = rev_by_brand.get("natcho", 0)
-        k[2].metric("Natcho MER", f"{nat_rev / total_spend:.2f}" if total_spend else "—")
-        best = p.roas.idxmax() if p.roas.notna().any() else "—"
-        k[3].metric("Best ROAS platform", best)
+        k[2].metric("MER (real)", f"{brand_rev / total_spend:.2f}" if total_spend else "—")
+        k[3].metric("Best ROAS platform", p.roas.idxmax() if p.roas.notna().any() else "—")
         cols = st.columns(len(p) or 1)
         for i, (plat, r) in enumerate(p.iterrows()):
             cols[i].metric(plat, f"ROAS {r.roas:.2f}" if pd.notna(r.roas) else "ROAS —",
@@ -248,7 +336,7 @@ with tab_ads:
                                 "conversions", "cpa_sar", "clicks", "cpc_sar", "impressions"]]
         st.dataframe(show, hide_index=True, width="stretch", column_config={
             "spend_sar": st.column_config.NumberColumn("Spend SAR", format="%.0f"),
-            "share_of_spend": st.column_config.ProgressColumn("Share", format="%.0f%%", min_value=0, max_value=1),
+            "share_of_spend": st.column_config.ProgressColumn("Share", format="percent", min_value=0, max_value=1),
             "conv_value_sar": st.column_config.NumberColumn("Conv. value SAR", format="%.0f"),
             "roas": st.column_config.NumberColumn("ROAS", format="%.2f"),
             "prev_roas": st.column_config.NumberColumn("ROAS prev", format="%.2f"),
@@ -262,7 +350,8 @@ with tab_ads:
         c2.plotly_chart(px.bar(r, x="date", y="spend_sar", color="platform", title="Spend per day (SAR)",
                                labels={"spend_sar": "SAR", "date": ""}), width="stretch")
 
-        camp = nums(table("ad_campaign_daily", [("date", f"gte.{start}"), ("date", f"lte.{end}")]),
+        camp = nums(table("ad_campaign_daily", [("brand", f"eq.{brand}"), ("date", f"gte.{start}"),
+                                                ("date", f"lte.{end}")]),
                     ["spend_sar", "conv_value_sar", "conversions", "clicks"])
         if not camp.empty:
             st.subheader("Campaigns")
@@ -283,14 +372,10 @@ with tab_ads:
 
 # ---- products & restock -------------------------------------------------------
 with tab_prod:
-    ps = nums(table("product_status", []), ["stock", "units_7d", "units_30d", "revenue_30d", "velocity_day",
-                                            "days_cover", "reorder_qty", "seo_score", "price_sar"])
-    if ps.empty:
+    b = ps_all
+    if b.empty:
         st.caption("مفيش داتا منتجات لسه.")
     else:
-        brand = st.radio("Brand", [b for b in BRANDS if b in set(ps.brand)], format_func=BRANDS.get,
-                         horizontal=True, key="prod_brand")
-        b = ps[ps.brand == brand]
         st.caption(f"Snapshot: {b.snapshot_date.max()} · سرعة البيع = متوسط آخر 14 يوم · "
                    "الكمية المقترحة تكفي 30 يوم")
         rs = b[b.restock.notna()].copy()
@@ -336,7 +421,7 @@ with tab_prod:
                              "revenue_sar": st.column_config.NumberColumn("Revenue", format="%.0f"),
                              "units_avg28": st.column_config.NumberColumn("Units/day avg 28d", format="%.2f"),
                              "revenue_sar_avg28": st.column_config.NumberColumn("Rev/day avg 28d", format="%.0f"),
-                             "vs_avg": st.column_config.NumberColumn("vs avg", format="%+.0f%%")})
+                             "vs_avg": st.column_config.NumberColumn("vs avg", format="percent")})
             w = pdaily[(pdaily.date >= start) & (pdaily.date <= end)]
             pw = pdaily[(pdaily.date >= prev_start) & (pdaily.date < start)]
             m = (w.groupby(["sku", "name"]).revenue_sar.sum().rename("revenue").to_frame()
@@ -349,7 +434,8 @@ with tab_prod:
             c2.markdown("**📉 Falling**")
             c2.dataframe(m.nsmallest(15, "change")[["name", "revenue", "prev_revenue", "change"]], hide_index=True,
                          width="stretch")
-            dead = b[(b.units_30d.fillna(0) == 0) & (b.stock > 0)]
+        dead = b[(b.units_30d.fillna(0) == 0) & (b.stock > 0)] if brand == "natcho" else pd.DataFrame()
+        if not dead.empty:
             with st.expander(f"🧊 Published with stock but 0 sales in 30 days ({len(dead)})"):
                 st.dataframe(dead[["name", "sku", "stock", "price_sar", "seo_score", "gsc_impressions", "url"]]
                              .sort_values("stock", ascending=False), hide_index=True, width="stretch",
@@ -358,19 +444,11 @@ with tab_prod:
 
 # ---- SEO health ----------------------------------------------------------------
 with tab_seo:
-    seo = nums(table("seo_daily", [("order", "date")]), ["published", "avg_score", "low_score", "missing_title",
-                                                         "missing_description", "missing_keywords", "no_images",
-                                                         "single_image", "duplicate_titles", "url_errors",
-                                                         "slow_pages", "merchant_disapproved"])
-    ps = table("product_status", [])
-    if seo.empty or ps.empty:
+    if seo_all.empty or ps_all.empty:
         st.caption("مفيش داتا SEO لسه.")
     else:
-        ps = nums(ps, ["seo_score", "units_30d", "revenue_30d", "gsc_impressions", "gsc_clicks", "gsc_position"])
-        brand = st.radio("Brand", [b for b in BRANDS if b in set(seo.brand)], format_func=BRANDS.get,
-                         horizontal=True, key="seo_brand")
-        s = seo[seo.brand == brand].sort_values("date")
-        last, first = s.iloc[-1], s.iloc[0]
+        s = seo_all
+        last = s.iloc[-1]
         k = st.columns(5)
         k[0].metric("SEO score (avg)", f"{last.avg_score:.0f}/100",
                     f"{last.avg_score - s.iloc[-2].avg_score:+.1f}" if len(s) > 1 else None)
@@ -386,7 +464,7 @@ with tab_seo:
         if len(s) > 1:
             st.plotly_chart(px.line(s, x="date", y="avg_score", title="SEO score trend"), width="stretch")
 
-        b = ps[ps.brand == brand].copy()
+        b = ps_all.copy()
         st.subheader("🛠️ Products to fix — مرتبة حسب الأهمية")
         st.caption("الأولوية = منتجات بتبيع أو بتظهر في جوجل ودرجتها ضعيفة. صلّح من زد ← المنتج ← تحسين محركات البحث.")
         b["priority"] = (100 - b.seo_score) * (1 + b.revenue_30d.fillna(0) / 500 + b.gsc_impressions.fillna(0) / 5000)
@@ -405,20 +483,23 @@ with tab_seo:
                 "url": st.column_config.LinkColumn("Link", display_text="open")})
         counts = (b.seo_issues.dropna().str.split("، ").explode()
                   .str.replace(r"^الصفحة:.*", "مشكلة في الصفحة (URL health)", regex=True).value_counts())
-        st.plotly_chart(px.bar(counts.sort_values(), orientation="h", title="Issues across the catalogue",
-                               labels={"value": "products", "index": ""}), width="stretch")
+        fig = px.bar(counts.sort_values(), orientation="h", title="Issues across the catalogue",
+                     labels={"value": "products", "index": ""})
+        fig.update_traces(marker_color=ui.ORANGE, marker_cornerradius=6)
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, width="stretch")
 
 
 # ---- Search Console ------------------------------------------------------------
 with tab_gsc:
-    gd = nums(table("gsc_daily", [("date", f"gte.{prev_start}"), ("order", "date")]),
+    gd = nums(table("gsc_daily", [("brand", f"eq.{brand}"), ("date", f"gte.{prev_start}"), ("order", "date")]),
               ["clicks", "impressions", "ctr", "position"])
-    gq = nums(table("gsc_queries", []), ["clicks", "impressions", "ctr", "position", "prev_clicks",
-                                         "prev_impressions", "prev_position"])
+    gq = nums(table("gsc_queries", [("brand", f"eq.{brand}")]),
+              ["clicks", "impressions", "ctr", "position", "prev_clicks", "prev_impressions", "prev_position"])
     if gd.empty and gq.empty:
-        st.caption("مفيش داتا Search Console لسه.")
+        st.caption(f"مفيش داتا Search Console لـ {BRANDS[brand]} لسه.")
     else:
-        st.caption("Natcho · Google Search Console (organic). جوجل بيتأخر يومين في الداتا.")
+        st.caption("Google Search Console (organic). جوجل بيتأخر يومين في الداتا.")
         if not gd.empty:
             gd["date"] = pd.to_datetime(gd.date).dt.date
             gc, gp = gd[(gd.date >= start) & (gd.date <= end)], gd[(gd.date >= prev_start) & (gd.date < start)]
@@ -445,7 +526,7 @@ with tab_gsc:
             st.dataframe(opp[opp.opportunity.isin(pick)].sort_values("impressions", ascending=False)[
                 ["opportunity", "query", "clicks", "prev_clicks", "impressions", "ctr", "position", "prev_position",
                  "action"]], hide_index=True, width="stretch", column_config={
-                    "ctr": st.column_config.NumberColumn("CTR", format="%.3f"),
+                    "ctr": st.column_config.NumberColumn("CTR", format="percent"),
                     "position": st.column_config.NumberColumn("Pos", format="%.1f"),
                     "prev_position": st.column_config.NumberColumn("Prev pos", format="%.1f"),
                     "action": st.column_config.TextColumn("Action", width="large")})
@@ -455,9 +536,9 @@ with tab_gsc:
             c1.dataframe(nb.nlargest(25, "clicks")[["query", "clicks", "impressions", "position"]], hide_index=True,
                          width="stretch")
             c2.markdown("**Brand vs non-brand clicks**")
-            split = gq.assign(type=gq.is_brand.astype(bool).map({True: "Brand (ناتشو)", False: "Non-brand"}))
-            c2.plotly_chart(px.pie(split.groupby("type", as_index=False).clicks.sum(), names="type", values="clicks"),
-                            width="stretch")
+            split = gq.assign(type=gq.is_brand.astype(bool).map({True: "Brand", False: "Non-brand"}))
+            pie = px.pie(split.groupby("type", as_index=False).clicks.sum(), names="type", values="clicks", hole=0.6)
+            c2.plotly_chart(pie, width="stretch")
             q = st.text_input("Search a keyword", key="gsc_q")
             if q:
                 st.dataframe(gq[gq["query"].str.contains(q, case=False, regex=False)].sort_values("impressions", ascending=False)[
