@@ -6,6 +6,7 @@ Data source:   Supabase via st.secrets["supabase"] (url, service_key) or
                on the Morning Ops cache (Natcho only) so the layout can be previewed.
 Optional:      st.secrets["app_password"] gates the app behind one shared password.
 """
+import hmac
 import json
 import sys
 from datetime import date, timedelta
@@ -39,10 +40,12 @@ def gate():
         pw = None
     if not pw or st.session_state.get("ok"):
         return
-    entered = st.text_input("Password", type="password")
-    if entered == pw:
+    entered = st.text_input("Password", type="password", help="اكتب الباسورد واضغط Enter")
+    if entered and hmac.compare_digest(entered, pw):
         st.session_state.ok = True
         st.rerun()
+    if entered:
+        st.error("الباسورد غلط.")
     st.stop()
 
 
