@@ -632,6 +632,33 @@ with tab_content:
                             f'<div class="k-ins-row"><b>هنعمل إيه:</b> {r.action}</div>'
                             f'<div class="k-sub" style="margin-top:8px">{r.competitor} · {days}</div></div>')
 
+        # the competitors' posts that pulled the most views this week, with why and the format
+        posts = table("competitor_posts", [("brand", f"eq.{brand}"), ("order", "week.desc,metric_value.desc")])
+        if len(posts):
+            st.subheader("🏆 Top competitor posts — الأعلى مشاهدات")
+            weeks = list(dict.fromkeys(posts.week.astype(str)))
+            wk = st.selectbox("Week", weeks, format_func=lambda w: f"أسبوع {w}", key="posts_week")
+            w = posts[posts.week.astype(str) == wk]
+            st.caption("Like-rate = لايكات ÷ مشاهدات. أقل من 0.1% مع ملايين المشاهدات = فيديو ممول، مش أورجانيك. "
+                       "الأعلى في الـ like-rate هو اللي شغال فعلاً عند الجمهور. "
+                       "Formats: " + " · ".join(f"{f} ({n})" for f, n in
+                                             w.format.str.split(r" · | \(").str[0].value_counts().items()))
+            cols = st.columns(3)
+            for i, r in enumerate(w.itertuples()):
+                with cols[i % 3].container(key=f"card_post_{r.id}", border=False):
+                    if r.image_url:
+                        st.image(r.image_url, width="stretch")
+                    ui.html(f'<div class="k-head"><span>{r.competitor} · {r.platform}</span>'
+                            f'<span class="k-sub">{r.id}</span></div>'
+                            f'<div style="margin:6px 0"><span class="k-tag" style="background:{ui.ORANGE};color:#111">'
+                            f'{r.format}</span></div>'
+                            f'<div class="k-sub">{r.metric}</div>'
+                            f'<div class="k-rtl"><div class="k-ins-title">{r.hook or ""}</div>'
+                            f'<div class="k-ins-row"><b>جاب ترافيك ليه:</b> {r.why or ""}</div>'
+                            f'<div class="k-ins-row"><b>ناخد منه إيه:</b> {r.takeaway or ""}</div>'
+                            f'<div class="k-sub" style="margin-top:8px"><a href="{r.post_url}" target="_blank">افتح البوست ↗</a>'
+                            f'</div></div>')
+
         # the plan itself, in the August v7 format + the hook columns
         if len(plan):
             st.subheader("📅 Content plan")

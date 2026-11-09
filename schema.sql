@@ -208,3 +208,22 @@ create table if not exists content_plan (
 
 alter table content_insights enable row level security;
 alter table content_plan     enable row level security;
+
+-- v4: weekly top competitor posts (images in Storage bucket "competitor-posts", public read)
+create table if not exists competitor_posts (
+  brand        text not null,
+  week         date not null,       -- Sunday of the research run
+  id           text not null,       -- P01, P02 …
+  competitor   text,
+  platform     text,                -- instagram | tiktok | meta_ad | snapchat
+  post_url     text,
+  image_url    text,                -- public Storage URL of the saved screenshot/thumbnail
+  format       text,                -- Reel | Carousel | Static | UGC video | Story ad …
+  metric       text,                -- what "top" means for this post: "1.2M views", "running 96 days"
+  metric_value numeric,             -- for sorting
+  hook         text,                -- opening line / text on image
+  why          text,                -- why it got the traffic
+  takeaway     text,                -- what Natcho copies (SFDA-safe)
+  primary key (brand, week, id)
+);
+alter table competitor_posts enable row level security;
