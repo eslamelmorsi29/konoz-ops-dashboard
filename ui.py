@@ -104,6 +104,15 @@ div[class*="st-key-hero"] {{ background: {ORANGE}; border-radius: 30px; padding:
 .k-chip {{ width: 46px; height: 46px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
   font-weight: 700; color: #111; }}
 .k-sub {{ color: {MUTED}; font-size: 0.85rem; }}
+.k-rtl {{ direction: rtl; text-align: right; unicode-bidi: plaintext; line-height: 1.7; }}
+.k-tag {{ display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 0.75rem; font-weight: 700;
+  margin-inline-end: 6px; }}
+.k-ins-title {{ color: #fff; font-weight: 600; font-size: 1rem; margin: 10px 0 8px; }}
+.k-ins-row {{ color: #CFCFCF; font-size: 0.9rem; margin-top: 6px; }}
+.k-ins-row b {{ color: {ORANGE}; font-weight: 600; }}
+.k-hook-old {{ color: {MUTED}; font-size: 0.95rem; text-decoration: line-through; text-decoration-color: #555; }}
+.k-hook-new {{ color: #fff; font-size: 1.15rem; font-weight: 600; margin: 6px 0; }}
+.k-why {{ color: {GREEN}; font-size: 0.85rem; }}
 </style>
 """
 

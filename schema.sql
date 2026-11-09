@@ -171,3 +171,40 @@ alter table seo_daily         enable row level security;
 alter table gsc_daily         enable row level security;
 alter table gsc_queries       enable row level security;
 alter table ad_campaign_daily enable row level security;
+
+-- ---- v3: content plan & market insights (2026-11-09) --------------------------
+create table if not exists content_insights (
+  brand      text not null,
+  id         text not null,
+  updated    date,
+  type       text,            -- competitor_ad | customer_voice | gap | moment | positioning | risk | competitor_social
+  competitor text,
+  priority   text,            -- high | medium | low
+  finding    text,
+  weakness   text,
+  action     text,
+  evidence   text,
+  days       text,            -- plan days that act on it, "4,20,29"
+  primary key (brand, id)
+);
+
+create table if not exists content_plan (
+  brand        text not null,
+  date         date not null,
+  day          integer,
+  week_theme   text,
+  content_type text,
+  hook_type    text,
+  product      text,
+  visual_ref   text,
+  on_image     text,          -- current hook (text on the image)
+  caption      text,
+  offer        text,
+  hook_alt     text,          -- stronger alternative hook
+  hook_alt_why text,
+  insight_ids  text,
+  primary key (brand, date)
+);
+
+alter table content_insights enable row level security;
+alter table content_plan     enable row level security;

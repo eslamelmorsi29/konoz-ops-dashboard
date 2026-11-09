@@ -179,8 +179,8 @@ ps_all = nums(table("product_status", [("brand", f"eq.{brand}")]),
                "seo_score", "price_sar", "gsc_impressions", "gsc_clicks", "gsc_position"])
 
 st.write("")
-tab_over, tab_ads, tab_prod, tab_seo, tab_gsc = st.tabs(
-    ["Overview", "Ads & ROAS", "Products & Restock", "SEO health", "Search Console"])
+tab_over, tab_ads, tab_prod, tab_seo, tab_gsc, tab_content = st.tabs(
+    ["Overview", "Ads & ROAS", "Products & Restock", "SEO health", "Search Console", "Content & Insights"])
 
 # ---- overview ------------------------------------------------------------------
 with tab_over:
@@ -566,3 +566,97 @@ with tab_gsc:
                 st.dataframe(gq[gq["query"].str.contains(q, case=False, regex=False)].sort_values("impressions", ascending=False)[
                     ["query", "clicks", "prev_clicks", "impressions", "ctr", "position", "prev_position", "action"]],
                     hide_index=True, width="stretch")
+
+
+# ---- content plan & market insights ---------------------------------------------
+PRIORITY_COLOR = {"high": ui.RED, "medium": "#FF9F43", "low": ui.YELLOW}
+INSIGHT_TYPE = {"competitor_ad": "📣 إعلانات المنافسين", "customer_voice": "💬 كلام العملاء", "gap": "🕳️ فجوة في السوق",
+                "moment": "📆 مناسبة", "positioning": "🧭 Positioning", "risk": "⚠️ مخاطرة",
+                "competitor_social": "📱 سوشيال المنافسين"}
+
+with tab_content:
+    ins = table("content_insights", [("brand", f"eq.{brand}")])
+    plan = table("content_plan", [("brand", f"eq.{brand}"), ("order", "date")])
+    if ins.empty and plan.empty:
+        st.caption(f"مفيش content plan ولا insights لـ {BRANDS[brand]} لسه.")
+    else:
+        today = date.today()
+        if not plan.empty:
+            plan["date"] = pd.to_datetime(plan.date).dt.date
+        k = st.columns(4)
+        k[0].metric("Insights", len(ins), f"{(ins.priority == 'high').sum()} high" if len(ins) else None,
+                    delta_color="off")
+        k[1].metric("Plan days", len(plan), f"{plan.date.min():%b %d} → {plan.date.max():%b %d}" if len(plan) else None,
+                    delta_color="off")
+        k[2].metric("Stronger hooks", int(plan.hook_alt.notna().sum()) if len(plan) else 0)
+        if len(ins):
+            k[3].metric("Last research", str(ins.updated.max()))
+
+        # next posts: current hook vs the stronger alternative
+        if len(plan):
+            nxt = plan[plan.date >= today].head(3)
+            if nxt.empty:
+                nxt = plan.head(3)
+            st.subheader("🪝 Next posts — الهوك الحالي vs الأقوى")
+            for col, r in zip(st.columns(len(nxt)), nxt.itertuples()):
+                with col.container(key=f"card_next_{r.day}", height=300, border=False):
+                    ui.html(f'<div class="k-head"><span>{r.date:%a %d %b} · {r.content_type}</span>'
+                            f'<span class="k-sub">{r.insight_ids or ""}</span></div>'
+                            f'<div class="k-rtl" style="margin-top:14px">'
+                            f'<div class="k-hook-old">{r.on_image or ""}</div>'
+                            f'<div class="k-hook-new">{r.hook_alt or r.on_image or ""}</div>'
+                            f'<div class="k-why">↑ {r.hook_alt_why or ""}</div>'
+                            f'<div class="k-sub" style="margin-top:10px">{(r.product or "").split(" — ")[0]}</div></div>')
+
+        # market insights: what competitors do, their weak spot, and what we do about it
+        if len(ins):
+            st.subheader("🔍 Market & competitor insights")
+            st.caption("من إعلانات المنافسين الشغالة (Meta Ad Library)، ريفيوهات العملاء عند المنافسين، مواقعهم، وداتا GSC. "
+                       "كل insight مربوط بأيام في الخطة.")
+            types = [t for t in INSIGHT_TYPE if t in set(ins.type)]
+            pick = st.segmented_control("Type", types, format_func=INSIGHT_TYPE.get, selection_mode="multi",
+                                        default=types, label_visibility="collapsed", key="ins_type")
+            f = ins[ins.type.isin(pick or types)].copy()
+            f["rank"] = f.priority.map({"high": 0, "medium": 1, "low": 2})
+            f = f.sort_values(["rank", "id"])
+            cols = st.columns(3)
+            for i, r in enumerate(f.itertuples()):
+                c = PRIORITY_COLOR.get(r.priority, ui.YELLOW)
+                days = f"أيام الخطة: {r.days}" if r.days else "استراتيجي (مش يوم محدد)"
+                with cols[i % 3].container(key=f"card_ins_{r.id}", border=False):
+                    ui.html(f'<div class="k-head"><span><span class="k-tag" style="background:{c};color:#111">{r.priority}</span>'
+                            f'<span class="k-sub">{INSIGHT_TYPE.get(r.type, r.type)}</span></span>'
+                            f'<span class="k-sub">{r.id}</span></div>'
+                            f'<div class="k-rtl"><div class="k-ins-title">{r.finding}</div>'
+                            f'<div class="k-ins-row"><b>نقطة الضعف:</b> {r.weakness}</div>'
+                            f'<div class="k-ins-row"><b>هنعمل إيه:</b> {r.action}</div>'
+                            f'<div class="k-sub" style="margin-top:8px">{r.competitor} · {days}</div></div>')
+
+        # the plan itself, in the August v7 format + the hook columns
+        if len(plan):
+            st.subheader("📅 Content plan")
+            weeks = list(dict.fromkeys(plan.week_theme.dropna()))
+            wk = st.selectbox("Week", ["كل الشهر"] + weeks, key="plan_week")
+            p = plan if wk == "كل الشهر" else plan[plan.week_theme == wk]
+            st.dataframe(p[["date", "content_type", "hook_type", "product", "on_image", "hook_alt", "hook_alt_why",
+                            "offer", "insight_ids", "visual_ref", "caption"]], hide_index=True, width="stretch",
+                         column_config={
+                             "date": st.column_config.DateColumn("Date", format="ddd DD MMM"),
+                             "content_type": "Type", "hook_type": "Hook type", "product": "Product",
+                             "on_image": st.column_config.TextColumn("Hook الحالي", width="medium"),
+                             "hook_alt": st.column_config.TextColumn("Hook أقوى", width="medium"),
+                             "hook_alt_why": "ليه أقوى", "offer": "العرض", "insight_ids": "Insight",
+                             "visual_ref": "Visual", "caption": "Caption"})
+            c1, c2 = st.columns(2)
+            mix = p.content_type.value_counts().sort_values()
+            fig = px.bar(mix, orientation="h", title="Content types", labels={"value": "posts", "index": ""})
+            fig.update_traces(marker_color=ui.ORANGE, marker_cornerradius=6)
+            fig.update_layout(showlegend=False)
+            c1.plotly_chart(fig, width="stretch")
+            hooks = p.hook_type.str.extract(r"\(([^)]+)\)")[0].fillna(p.hook_type).value_counts().sort_values()
+            fig = px.bar(hooks, orientation="h", title="Hook types", labels={"value": "posts", "index": ""})
+            fig.update_traces(marker_color=ui.YELLOW, marker_cornerradius=6)
+            fig.update_layout(showlegend=False)
+            c2.plotly_chart(fig, width="stretch")
+            st.download_button("⬇️ Download plan (CSV)", p.drop(columns=["brand"]).to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"{brand}_content_plan.csv", mime="text/csv")
