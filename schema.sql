@@ -227,3 +227,20 @@ create table if not exists competitor_posts (
   primary key (brand, week, id)
 );
 alter table competitor_posts enable row level security;
+
+-- v5: Natcho orders with «منتجات عالمية» products → one Kiwigo sheet each. No customer name/phone/address here
+-- (those live only in the xlsx on Eslam's Desktop).
+create table if not exists global_orders (
+  brand      text not null,
+  order_id   text not null,
+  sheet_no   integer,
+  sheet_file text,
+  order_date date,
+  status     text,
+  city       text,
+  items      text,          -- "Swisse Ultivite Women's … ×1 · …"
+  qty        integer,
+  made_at    timestamptz default now(),
+  primary key (brand, order_id)
+);
+alter table global_orders enable row level security;

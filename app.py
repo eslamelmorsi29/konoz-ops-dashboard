@@ -393,6 +393,9 @@ with tab_ads:
 
 
 # ---- products & restock -------------------------------------------------------
+ORDER_STATUS = {"new": "🆕 جديد", "preparing": "📦 جاري التجهيز", "ready": "✅ جاهز", "indelivery": "🚚 جاري التوصيل",
+                "delivered": "🏠 تم التوصيل", "cancelled": "❌ ملغي", "reversed": "↩️ مرتجع"}
+
 with tab_prod:
     b = ps_all
     if b.empty:
@@ -462,6 +465,38 @@ with tab_prod:
                 st.dataframe(dead[["name", "sku", "stock", "price_sar", "seo_score", "gsc_impressions", "url"]]
                              .sort_values("stock", ascending=False), hide_index=True, width="stretch",
                              column_config={"url": st.column_config.LinkColumn("Link", display_text="open")})
+
+    # orders with «منتجات عالمية» products → one Kiwigo sheet each (made daily by natcho-global-orders-daily)
+    if brand == "natcho":
+        go = nums(table("global_orders", [("brand", "eq.natcho"), ("order", "sheet_no.desc")]), ["sheet_no", "qty"])
+        st.subheader("🌍 Kiwigo — أوردرات المنتجات العالمية")
+        if go.empty:
+            st.caption("مفيش أوردرات منتجات عالمية لسه.")
+        else:
+            go["order_date"] = pd.to_datetime(go.order_date).dt.date
+            go["made_at"] = pd.to_datetime(go.made_at).dt.tz_convert("Asia/Riyadh").dt.date
+            k = st.columns(4)
+            k[0].metric("Last sheet", f"#{int(go.sheet_no.max())}")
+            k[1].metric(f"Orders · last {days}d", int((go.order_date >= start).sum()))
+            k[2].metric(f"Pieces · last {days}d", int(go[go.order_date >= start].qty.sum()))
+            k[3].metric("New today", int((go.made_at == date.today()).sum()))
+            st.caption("الشيتات نفسها (بالاسم والعنوان) على الـ Desktop في `Kiwigo Orders`، وبتتبعت لـ Kiwigo يدوي. "
+                       "هنا من غير بيانات العملاء.")
+            go["status"] = go.status.map(ORDER_STATUS).fillna(go.status)
+            st.dataframe(go[["sheet_no", "order_id", "order_date", "status", "city", "qty", "items", "sheet_file"]],
+                         hide_index=True, width="stretch", column_config={
+                             "sheet_no": st.column_config.NumberColumn("#", format="%d"),
+                             "order_id": "Order", "order_date": st.column_config.DateColumn("Date"),
+                             "status": "Status", "city": "City", "qty": "Pcs",
+                             "items": st.column_config.TextColumn("Products", width="large"),
+                             "sheet_file": "Sheet"})
+            top = (go["items"].str.split(" · ").explode().str.rsplit(" ×", n=1, expand=True)
+                   .rename(columns={0: "product", 1: "qty"}).astype({"qty": int}).groupby("product").qty.sum())
+            fig = px.bar(top.sort_values().tail(10), orientation="h", title="Top global products (all sheets)",
+                         labels={"value": "pcs", "product": ""})
+            fig.update_traces(marker_color=ui.ORANGE, marker_cornerradius=6)
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, width="stretch")
 
 
 # ---- SEO health ----------------------------------------------------------------
