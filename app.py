@@ -7,8 +7,10 @@ Data source:   Supabase via st.secrets["supabase"] (url, service_key) or
 Optional:      st.secrets["app_password"] gates the app behind one shared password.
 """
 import hmac
+import io
 import json
 import sys
+import zipfile
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -67,6 +69,16 @@ def fetch(table, params):
         if len(rows) < 1000:
             return pd.DataFrame(out)
         start += 1000
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def kiwigo_sheet(name):
+    """The xlsx for Kiwigo (with the customer's details) from the private bucket "kiwigo-sheets"."""
+    c = creds()
+    k = c["service_key"]
+    h = {"apikey": k} if k.startswith("sb_") else {"apikey": k, "Authorization": f"Bearer {k}"}
+    r = requests.get(f"{c['url'].rstrip('/')}/storage/v1/object/kiwigo-sheets/natcho/{name}", headers=h, timeout=60)
+    return r.content if r.ok else None
 
 
 @st.cache_data(ttl=900)
@@ -480,9 +492,28 @@ with tab_prod:
             k[1].metric(f"Orders · last {days}d", int((go.order_date >= start).sum()))
             k[2].metric(f"Pieces · last {days}d", int(go[go.order_date >= start].qty.sum()))
             k[3].metric("New today", int((go.made_at == date.today()).sum()))
-            st.caption("الشيتات نفسها (بالاسم والعنوان) على الـ Desktop في `Kiwigo Orders`، وبتتبعت لـ Kiwigo يدوي. "
-                       "هنا من غير بيانات العملاء.")
+            st.caption("نزّل الشيت الكامل (فيه اسم العميل وتليفونه وعنوانه) وابعته لـ Kiwigo. "
+                       "الجدول نفسه مافيهوش بيانات العملاء.")
             go["status"] = go.status.map(ORDER_STATUS).fillna(go.status)
+            # download the full sheet (customer name, phone, address) to send to Kiwigo
+            c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
+            pick = c1.selectbox("Sheet", go.sheet_file.dropna().tolist(), key="kiwigo_sheet",
+                                format_func=lambda f: f"{f}  ·  " + go.loc[go.sheet_file == f, "status"].iloc[0])
+            data = kiwigo_sheet(pick) if pick else None
+            if data:
+                c2.download_button("⬇️ Download", data, file_name=pick, width="stretch", type="primary",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            elif pick:
+                c2.caption("الشيت مش مرفوع لسه.")
+            today_files = go[go.made_at == date.today()].sheet_file.dropna().tolist()
+            if len(today_files) > 1:
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as z:
+                    for f in today_files:
+                        if (b := kiwigo_sheet(f)):
+                            z.writestr(f, b)
+                st.download_button(f"⬇️ كل شيتات النهارده ({len(today_files)})", buf.getvalue(),
+                                   file_name=f"kiwigo sheets {date.today()}.zip", mime="application/zip")
             st.dataframe(go[["sheet_no", "order_id", "order_date", "status", "city", "qty", "items", "sheet_file"]],
                          hide_index=True, width="stretch", column_config={
                              "sheet_no": st.column_config.NumberColumn("#", format="%d"),
